@@ -50,8 +50,7 @@ def load_ml_models():
 @st.cache_resource
 def load_llm():
     # Настройка API ключа (рекомендуется использовать st.secrets для безопасности)
-    # api_key = st.secrets["GEMINI_API_KEY"]  # Раскомментируйте и настройте в secrets.toml
-    api_key = "AIzaSyCu1WVHpptvzFrF4n3K9YsEiGF6yQ0cx3k"  # Ваш API ключ (замените на secrets для продакшена)
+    api_key = st.secrets["GEMINI_API_KEY"]  # Раскомментируйте и настройте в secrets.toml
     client = genai.Client(api_key=api_key)
     
     # Получить список доступных моделей
