@@ -1,8 +1,10 @@
+from xmlrpc import client
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import torch
 from sklearn.ensemble import RandomForestRegressor, IsolationForest
+from google import genai
 
 # ─────────────────────────────────────────────────────────────
 # 1. Кэширование ML-моделей (обучается один раз за сессию)
@@ -43,25 +45,41 @@ def load_ml_models():
     return reg, iso, feats
 
 # ─────────────────────────────────────────────────────────────
-# 2. Кэширование LLM (скачивается ~1.1 ГБ при первом запуске)
+# 2. Кэширование LLM (Gemini API)
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_llm():
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-
-    model_name = "Qwen/Qwen2.5-0.5B-Instruct"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float32,  # float32 для стабильной работы на CPU
-        device_map="cpu"
-    )
-    return tokenizer, model
+    # Настройка API ключа (рекомендуется использовать st.secrets для безопасности)
+    # api_key = st.secrets["GEMINI_API_KEY"]  # Раскомментируйте и настройте в secrets.toml
+    api_key = "AIzaSyCu1WVHpptvzFrF4n3K9YsEiGF6yQ0cx3k"  # Ваш API ключ (замените на secrets для продакшена)
+    client = genai.Client(api_key=api_key)
+    
+    # Получить список доступных моделей
+    models = client.models.list()
+    available_models = [m.name for m in models]
+    print("Доступные модели:", available_models)
+    
+    # Предпочитаемые модели (бесплатные или доступные)
+    preferred_models = ['gemini-1.0-pro', 'gemini-pro', 'gemini-1.5-flash', 'gemini-1.5-pro']
+    
+    # Выбрать первую доступную предпочтительную модель
+    selected_model = None
+    for pref in preferred_models:
+        if pref in available_models:
+            selected_model = pref
+            break
+    
+    if not selected_model:
+        # Если ни одна не доступна, взять первую из списка
+        selected_model = available_models[0] if available_models else 'gemini-pro'
+    
+    print(f"Выбрана модель: {selected_model}")
+    return client, selected_model
 
 # ─────────────────────────────────────────────────────────────
 # 3. Функция анализа и генерации отчёта
 # ─────────────────────────────────────────────────────────────
-def analyze_and_report(date, usage, reg, iso, feats, tokenizer, model):
+def analyze_and_report(date, usage, reg, iso, feats, client, model_name):
     dt = pd.to_datetime(date)
     input_data = pd.DataFrame([{
         "day_of_week": dt.dayofweek,
@@ -73,7 +91,7 @@ def analyze_and_report(date, usage, reg, iso, feats, tokenizer, model):
     }])
 
     predicted = reg.predict(input_data[feats])[0]
-    anomaly_flag = iso.predict([[usage]])[0] == -1
+    anomaly_flag = iso.predict(pd.DataFrame([[usage]], columns=["usage"]))[0] == -1
     diff = usage - predicted
 
     prompt = f"""Ты экологический аналитик школьной системы водоснабжения.
@@ -89,22 +107,12 @@ def analyze_and_report(date, usage, reg, iso, feats, tokenizer, model):
 3. Дай 2 конкретных и простых совета по экономии воды в школе.
 Пиши простым текстом, без списков и маркдауна."""
 
-    # Форматирование промпта под Qwen Instruct
-    messages = [{"role": "user", "content": prompt}]
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    model_inputs = tokenizer([text], return_tensors="pt")
-
-    with torch.no_grad():
-        generated_ids = model.generate(
-            model_inputs.input_ids,
-            max_new_tokens=250,
-            temperature=0.6,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id
-        )
-        generated_ids = [out[len(inp):] for inp, out in zip(model_inputs.input_ids, generated_ids)]
-    
-    report = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+    # Генерация с помощью Gemini
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt
+    )
+    report = response.text.strip()
     return report, predicted, anomaly_flag, diff
 
 # ─────────────────────────────────────────────────────────────
@@ -123,12 +131,12 @@ with st.form("water_input"):
     submitted = st.form_submit_button("🔍 Запустить анализ", type="primary", use_container_width=True)
 
 if submitted:
-    with st.spinner("⏳ Инициализация моделей... (первый запуск скачает ~1.1 ГБ LLM и обучит ML)"):
+    with st.spinner("⏳ Инициализация моделей... (загрузка ML и подключение к Gemini API)"):
         reg, iso, feats = load_ml_models()
-        tokenizer, model = load_llm()
+        client, model_name = load_llm()
         
         report, predicted, is_anomaly, diff = analyze_and_report(
-            date_in.isoformat(), usage_in, reg, iso, feats, tokenizer, model
+            date_in.isoformat(), usage_in, reg, iso, feats, client, model_name
         )
 
     st.success("✅ Анализ завершён!")
@@ -143,4 +151,4 @@ if submitted:
     st.subheader("🤖 Отчёт экологического аналитика")
     st.info(report)
 
-    st.caption("💡 *Примечание: модель работает локально. При подключении реальных датчиков данные будут передаваться через API.*")
+    st.caption("💡 *Примечание: используется Gemini API. При подключении реальных датчиков данные будут передаваться через API.*")
